@@ -29,9 +29,9 @@ class Head(nn.Module):
     def __init__(self, head_size): 
         super().__init__()
 
-        self.query = nn.Linear(EMBD_SIZE, head_size) # q = Wq * x
-        self.key   = nn.Linear(EMBD_SIZE, head_size) # k = Wk * x
-        self.value = nn.Linear(EMBD_SIZE, head_size) # v = Wv * x
+        self.query = nn.Linear(EMBD_SIZE, head_size) # q = X @ Wq
+        self.key   = nn.Linear(EMBD_SIZE, head_size) # k = X @ Wk
+        self.value = nn.Linear(EMBD_SIZE, head_size) # v = X @ Wv
 
         # This is used to apply the mask.
         # register_buffer is  used to register a buffer 
@@ -66,7 +66,7 @@ class Head(nn.Module):
         wei = self.dropout(wei) # (B, T, T)
 
         # Finally the head's output.
-        out = wei @ v
+        out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
         return out
 
 
@@ -217,7 +217,9 @@ def get_tokenizer(text):
     # All unique chars that occours in the input.
     chars = sorted(list(set(text)))
 
+    # Mapping from string->int
     stoi = { c:i for i, c in enumerate(chars) }
+    # Mapping from int->string
     itos = { i:c for i, c in enumerate(chars) }
 
     # Tokenizer: maps string -> list of int
