@@ -57,7 +57,7 @@ class Head(nn.Module):
 
         # Compute attention scores.
         # 1. Compute dot products: q x k^T
-        wei = q @ k.transpose(-2, -1) # (B, T, hs) @ (B, hs, T) -> (B, T, T)
+        wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
         # 2. Apply mask to preserve causality.
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
         # 3. Normalize with softmax along last dim.
