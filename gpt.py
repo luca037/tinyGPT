@@ -3,21 +3,23 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 ### GLOBAL VARS ###
-DEVICE = 'cpu'
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"INFO - Device = '{DEVICE}'")
 INPUTFN = './dataset.txt' # Our dataset.
 
-CONTEXT_SIZE = 256
-EMBD_SIZE = 384 # Embeddings vector size.
+CONTEXT_SIZE = 256 # Size of the context window.
+EMBD_SIZE = 384    # Embeddings vector size.
 NUM_HEADS = 6
 NUM_BLOCKS = 6
 
 DROPOUT = 0.2
 BATCH_SIZE = 64
-EVAL_ITERS = 200
-EVAL_INTERVAL = 500
-MAX_ITER = 5000
-LR = 3e-4
+EVAL_ITERS = 200    # Iterations to estimate train/val losses.
+EVAL_INTERVAL = 500 # Evaluation is performed every once in a while.
+MAX_ITER = 5000     # Total number of training steps.
+LR = 3e-4           # Learnig Rate
 
+torch.manual_seed(1337)
 
 ############################# ARCHITECTURE ####################################
 
@@ -220,7 +222,7 @@ def get_tokenizer(text):
 
     # Tokenizer: maps string -> list of int
     encode = lambda s: [stoi[c] for c in s]
-    decode = lambda l: ''.join([itos(i) for i in l])
+    decode = lambda l: ''.join([itos[i] for i in l])
 
     return chars, encode, decode
 
@@ -246,14 +248,14 @@ def get_batch(data):
 def estimate_loss(model, train, val):
     out = {} # Store both train and validation losses.
     model.eval()
-    for split in [train, val]:
+    for key, split in zip(['train', 'val'], [train, val]):
         losses = torch.zeros(EVAL_ITERS) # Store evaluations.
         # Estimate loss (mean).
         for k in range(EVAL_ITERS):
             xb, yb = get_batch(split)
             logits, loss = model(xb, yb)
             losses[k] = loss.item()
-        out[split] = losses.mean()
+        out[key] = losses.mean()
     model.train()
     return out
 
@@ -293,7 +295,7 @@ def main():
 
     for iter in range(MAX_ITER):
         # Estimate loss every once in a while.
-        if iter % EVAL_INTERVAL == 0 or iter == MAX_ITERS - 1:
+        if iter % EVAL_INTERVAL == 0 or iter == MAX_ITER - 1:
             losses = estimate_loss(model, train, val)
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         # Train model.
@@ -302,7 +304,10 @@ def main():
     # Generate tokens.
     # Init context with characther with idx 0 -> '\n'.
     context = torch.zeros((1, 1), dtype=torch.long, device=DEVICE)
-    print(decode(model.generate(context, 500)[0].tolist()))
+    text = decode(model.generate(context, 5000)[0].tolist())
+
+    print("Generated text:\n", text)
+    with open("output.txt", 'w') as f: f.write(text)
 
 
 if __name__ == '__main__':
