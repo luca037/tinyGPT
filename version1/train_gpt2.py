@@ -358,11 +358,15 @@ def train_test():
         print(f"itr: {i}, loss: {loss.item()}")
 
 
-def optim_tests(): 
+def optim_tests():
+    """ Tests just to see the benefit of each trick """
+    B, T = 4, 1024 # If it doesn't fit to GPU memory => decrease B.
+
+    # No optimization (only flash attention).
     def train_v1():
         model = GPT(GPTConfig()).to(DEVICE)
         optim = torch.optim.AdamW(model.parameters())
-        dl = SimpleDataLoader(2, 512)
+        dl = SimpleDataLoader(B, T)
         for i in range(10):
             t0 = time.time() 
             x, y = dl.next_batch()
@@ -372,13 +376,13 @@ def optim_tests():
             optim.zero_grad()
             loss.backward()
             optim.step()
-            torch.mps.synchronize()
+            torch.cuda.synchronize()
             t1 = time.time()
             dt = (t1 - t0) * 1000 # Time in milliseconds.
             tokens_per_sec = (dl.B * dl.T) / (t1 - t0)
             print(f"itr: {i}, loss: {loss.item()}, dt: {dt:.2f}ms, token/sec: {tokens_per_sec}")
-    # First test before optimization.
     #train_v1()
+
     # Set data type to TF32. [see Note4 in README.md]
     torch.set_float32_matmul_precision('high') # This will work depending on your GPU!
     #train_v1()
@@ -387,7 +391,7 @@ def optim_tests():
     def train_v2():
         model = GPT(GPTConfig()).to(DEVICE)
         optim = torch.optim.AdamW(model.parameters())
-        dl = SimpleDataLoader(2, 512)
+        dl = SimpleDataLoader(B, T)
         for i in range(10):
             t0 = time.time() 
             x, y = dl.next_batch()
@@ -399,12 +403,12 @@ def optim_tests():
             optim.zero_grad()
             loss.backward()
             optim.step()
-            torch.mps.synchronize()
+            torch.cuda.synchronize()
             t1 = time.time()
             dt = (t1 - t0) * 1000 # Time in milliseconds.
             tokens_per_sec = (dl.B * dl.T) / (t1 - t0)
             print(f"itr: {i}, loss: {loss.item()}, dt: {dt:.2f}ms, token/sec: {tokens_per_sec}")
-    train_v2()
+    #train_v2()
 
     # Added torch.compile. [see Note5 in README.md]
     def train_v3():
@@ -412,7 +416,7 @@ def optim_tests():
         # Complie model.
         model = torch.compile(model)
         optim = torch.optim.AdamW(model.parameters())
-        dl = SimpleDataLoader(2, 512)
+        dl = SimpleDataLoader(B, T)
         for i in range(10):
             t0 = time.time() 
             x, y = dl.next_batch()
@@ -423,12 +427,36 @@ def optim_tests():
             optim.zero_grad()
             loss.backward()
             optim.step()
-            torch.mps.synchronize()
+            torch.cuda.synchronize()
             t1 = time.time()
             dt = (t1 - t0) * 1000 # Time in milliseconds.
             tokens_per_sec = (dl.B * dl.T) / (t1 - t0)
             print(f"itr: {i}, loss: {loss.item()}, dt: {dt:.2f}ms, token/sec: {tokens_per_sec}")
-    train_v3()
+    #train_v3()
+
+    # Remove the ugly number (vocab_size). [see Note6 in README.md]
+    def train_v4():
+        model = GPT(GPTConfig(vocab_size=50304)).to(DEVICE)
+        # Complie model.
+        model = torch.compile(model)
+        optim = torch.optim.AdamW(model.parameters())
+        dl = SimpleDataLoader(B, T)
+        for i in range(10):
+            t0 = time.time() 
+            x, y = dl.next_batch()
+            x, y = x.to(DEVICE), y.to(DEVICE)
+            # Auto-cast!
+            with torch.autocast(device_type=DEVICE, dtype=torch.bfloat16):
+                logits, loss = model(x, y)
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
+            torch.cuda.synchronize()
+            t1 = time.time()
+            dt = (t1 - t0) * 1000 # Time in milliseconds.
+            tokens_per_sec = (dl.B * dl.T) / (t1 - t0)
+            print(f"itr: {i}, loss: {loss.item()}, dt: {dt:.2f}ms, token/sec: {tokens_per_sec}")
+    train_v4()
 
 
 ############################## MAIN ###########################################
@@ -448,7 +476,6 @@ def main():
     out = model.generate(input="Hi there!", max_tokens=100, model_type="gpt2")
     print("Generated output:\n")
     print(out[0])
-
 
 
 if __name__ == "__main__":
