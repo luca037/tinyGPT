@@ -21,7 +21,7 @@ LR = 3e-4           # Learnig Rate
 
 torch.manual_seed(1337)
 
-############################# ARCHITECTURE ####################################
+############################ ARCHITECTURE ####################################
 
 class Head(nn.Module):
     """ A single head of self-attention """
@@ -184,8 +184,8 @@ class GPTLanguageModel(nn.Module):
         loss = None
         if targets is not None: 
             # Reshape needed because of the loss func (see doc).
-            B, T, E = logits.shape
-            logits = logits.view(B * T, E)
+            B, T, vs = logits.shape
+            logits = logits.view(B * T, vs)
             targets = targets.view(B * T)
             # Compute loss.
             loss = F.cross_entropy(logits, targets)
