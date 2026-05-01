@@ -8,6 +8,8 @@ import transformers
 import tiktoken
 
 import time
+import math
+import inspect
 
 ############################# GOBAL VARS ######################################
 
@@ -17,6 +19,12 @@ if torch. cuda. is_available():
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     DEVICE = "mps"
 print(f"using device: {DEVICE}")
+
+
+MAX_LR = 6e-4         # Max learning rate.
+MIN_LR = MAX_LR * 0.1 # Min learning rate is 10% of max.
+WARMUP_STEPS = 10     # LR Scheduler setting.
+MAX_STEPS = 50        # Max number of steps.
 
 ############################# ARCHITECTURE ####################################
 
@@ -106,7 +114,7 @@ class Block(nn.Module):
 @dataclass
 class GPTConfig:
     """ Used to set architecture configurations """
-    block_size: int = 1024  # Max sequence length.
+    block_size: int = 1024  # Max sequence length (context window).
     vocab_size: int = 50257 # Number of tokens: 50,000 BPE merges + 256 bytes tokens + 1 <|endoftext|> token.
     n_layer: int = 12       # Number of layers.
     n_head: int = 12        # Number of heads.
@@ -269,30 +277,45 @@ class GPT(nn.Module):
 
         return model
 
-    #def configure_optimizers(self, weight_decay, learning_rate, device_type):
-    #    # start with all of the candidate parameters (that require grad)
-    #    param_dict = {pn: p for pn, p in self.named_parameters()}
-    #    param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
-    #    # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
-    #    # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
-    #    decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-    #    nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-    #    optim_groups = [
-    #        {'params': decay_params, 'weight_decay': weight_decay},
-    #        {'params': nodecay_params, 'weight_decay': 0.0}
-    #    ]
-    #    num_decay_params = sum(p.numel() for p in decay_params)
-    #    num_nodecay_params = sum(p.numel() for p in nodecay_params)
-    #    if master_process:
-    #        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-    #        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
-    #    # Create AdamW optimizer and use the fused version if it is available
-    #    fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-    #    use_fused = fused_available and device_type == "cuda"
-    #    if master_process:
-    #        print(f"using fused AdamW: {use_fused}")
-    #    optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
-    #    return optimizer
+    def configure_optimizers(self, weight_decay, learning_rate, device_type):
+        # [see Note9 in README.md]
+
+        # Create a dict with all parameters.
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        # We're interested only on the trainable ones.
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+
+        # Goal: in weight decay term (loss function) we want to ignore 
+        # the biases layernorms parameters, and we want to consider 
+        # only the weight tensors in matmults + embeddings matrix.
+
+        # Define the group of decay and non-decay params.
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weight_decay': 0.0}
+        ]
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        #if master_process:
+        print(f"Num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+        print(f"Num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+
+        # Create AdamW optimizer and use the fused version if it is available.
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and device_type == "cuda"
+        #if master_process:
+        #    print(f"using fused AdamW: {use_fused}")
+        optimizer = torch.optim.AdamW( # Params taken from the paper.
+            optim_groups, 
+            lr=learning_rate,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            #fused=use_fused
+        )
+
+        return optimizer
 
 ############################ DATALOADERS ######################################
 
@@ -331,7 +354,17 @@ class SimpleDataLoader:
 
 ############################## UTILS #########################################
 
-def train_test():
+def load_pretrained_test():
+    model = GPT.from_pretrained("gpt2")
+    model.eval()
+    model.to(DEVICE)
+
+    print("\n\nINFO - Generating output...")
+    out = model.generate(input="Hi there!", max_tokens=100, model_type="gpt2")
+    print("Generated output:\n")
+    print(out[0])
+
+def overfit_one_batch():
     """ Make sure we can overfit a single batch """
 
     # Get a single batch.
@@ -343,7 +376,6 @@ def train_test():
     model = GPT(GPTConfig()).to(DEVICE)
 
     # Check loss with initialized weights.
-    import math
     print("Loss should be around:", -math.log(1/model.config.vocab_size)) # Uniform distrib.
     _, loss = model(x, y)
     print("Loss is:", loss.item())
@@ -362,7 +394,7 @@ def optim_tests():
     """ Tests just to see the benefit of each trick """
     B, T = 4, 1024 # If it doesn't fit to GPU memory => decrease B.
 
-    # No optimization (only flash attention).
+    # No trick enabled (only flash attention).
     def train_v1():
         model = GPT(GPTConfig()).to(DEVICE)
         optim = torch.optim.AdamW(model.parameters())
@@ -459,23 +491,97 @@ def optim_tests():
     train_v4()
 
 
+def single_gpu_train_test():
+
+    # Define the number of gradient accumulation steps. [see Note10 in README.md]
+    total_batch_size = 2**19 # ~0.5M, in number of token.
+    B = 4    # Micro batch size.
+    T = 1024 # Sequence length.4
+    assert total_batch_size % (B * T ) == 0, "make sure total_batch_size is divisible by B * T"
+    grad_accum_steps = total_batch_size // (B * T)
+    print(f"Total desired batch size (in samples): {total_batch_size // T}.")
+    print(f"Total desired batch size (in tokens): {total_batch_size}.")
+    print(f"=> Calculated gradient accumulation steps: {grad_accum_steps}.")
+    
+    # Define model and compile it.
+    model = GPT(GPTConfig(vocab_size=50304)).to(DEVICE)
+    model = torch.compile(model)
+
+    # Define optimizer.
+    optim = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=DEVICE)
+
+    # Define dataloader.
+    dl = SimpleDataLoader(B, T)
+
+    for step in range(MAX_STEPS):
+        # Store current time.
+        t0 = time.time() 
+
+        # Zero-out grad.
+        optim.zero_grad()
+
+        # Total loss accumulator.
+        loss_accum = 0.0
+
+        # Accumulate gradients. [see Note10 in README.md]
+        for micro_step in range(grad_accum_steps):
+            # Get batch of data.
+            x, y = dl.next_batch()
+            x, y = x.to(DEVICE), y.to(DEVICE)
+
+            # Auto-cast to BF16.
+            with torch.autocast(device_type=DEVICE, dtype=torch.bfloat16):
+                logits, loss = model(x, y)
+            loss /= grad_accum_steps # Normalization factor.
+
+            # Backward pass (accumulate).
+            loss.backward()
+
+            #  Accumulate loss.
+            loss_accum += loss.detach()
+
+        # Train step.
+        # Normalize gradient. [see Note7 in README.md]
+        norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        # Get learning rate.
+        lr = get_lr(step)
+        # Update optimizer lr.
+        for param_group in optim.param_groups:
+            param_group['lr'] = lr 
+        optim.step() # Finally update model.
+
+        # Wait gpu.
+        torch.cuda.synchronize()
+        t1 = time.time() # Get current time.
+
+        # Print step info.
+        dt = (t1 - t0) * 1000 # Time in milliseconds.
+        tokens_per_sec = (dl.B * dl.T * grad_accum_steps) / (t1 - t0)
+        print(
+            f"itr: {step}, loss: {loss_accum.item():.2f}, lr:{lr:.6f}, norm: {norm:.2f}, dt: {dt:.2f}ms, token/sec: {tokens_per_sec:.2f}"
+        )
+
+
+def get_lr(step): # [see Note8 in README.md]
+    """ Learning Rate scheduler """
+    # 1) Linear warmup for WARMUP_ITERS steps.
+    if step < WARMUP_STEPS:
+        return MAX_LR * (step+1) / WARMUP_STEPS
+    # 2) If step > MAX_STEPS, return min val.
+    if step > MAX_STEPS:
+        return MIN_LR
+    # 3) In between, use cosine decay down to min learning rate.
+    decay_ratio = (step - WARMUP_STEPS) / (MAX_STEPS - WARMUP_STEPS)
+    assert 0 <= decay_ratio <= 1
+    # Coeff starts at 1 and goes to 0.
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) 
+    return MIN_LR + coeff * (MAX_LR - MIN_LR)
+
 ############################## MAIN ###########################################
 
 def main():
     # Run some tests.
-    #train_test()
-    optim_tests()
-    return
-
-    #model = GPT.from_pretrained("gpt2")
-    model = GPT(GPTConfig())
-    model.eval()
-    model.to(DEVICE)
-
-    print("\n\nINFO - Generating output...")
-    out = model.generate(input="Hi there!", max_tokens=100, model_type="gpt2")
-    print("Generated output:\n")
-    print(out[0])
+    single_gpu_train_test()
 
 
 if __name__ == "__main__":
