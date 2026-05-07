@@ -41,19 +41,20 @@ Recall that we're implementing multi-head self attention. In `version0` we've se
 
 In this implementation the query, key, value matrix of each head is grouped inside a big matrix.  Before executing the lines of code above, `k` looks like this
 
-$$
+```math
 k = 
 \begin{bmatrix}
 K_1 | \cdots | K_{nh}
 \end{bmatrix} \in \mathbb R^{T\times C},
 \quad K_i \in \mathbb R^{T\times hs}
-$$
-$$
+```
+
+```math
 \begin{split}
 nh &:= \text{number of heads}\\
 hs &:= \text{head size}
 \end{split}
-$$
+```
 
 where $hs = C \mod nh$. After the execution of the code above, each matrix $K_i$ is placed in the batch dimension (the third dimension), so that `k` becomes a `(nh, T, C)` tensor (ignore batch dimension `B`).
 
@@ -71,9 +72,9 @@ y = y.transpose(1, 2).contiguous().view(B, T, C)
 
 The unembedding matrix $V$ is the transpose of the embedding matrix $U$
 
-$$
+```math
 V = U^T
-$$
+```
 In our implementation this is obtained with
 
 ```python
@@ -111,12 +112,10 @@ In this section we introduce some tricks one can use to speed up our code by ful
 
 The data type that we use to represent the parameters in our network play a role in computational cost. The trade-off we face is between **precision** and **memory usage**.
 
-
 <div align="center">
 Table: NVIDIA A100 specs.
 <img width="700" height="600" alt="Pasted image 20260427180159" src="https://github.com/user-attachments/assets/8bc03d6f-8793-4d7f-87ac-02c9859fe28e" />
 </div>
-
 
 Pytorch by default uses FP32 and this is inefficient for our application! By casting our parameters to BF16 we increase the **TFLOPS** from 19 to 321!
 
@@ -125,7 +124,6 @@ Pytorch by default uses FP32 and this is inefficient for our application! By cas
 <div align="center">
 <img width="400" height="300" alt="Pasted image 20260427182009" src="https://github.com/user-attachments/assets/72d8907a-1b57-4d8e-9c44-7d02f7ad086e" />
 </div>
-
 
 BF16 have the same range as FP32 and TF32 but the mantissa occupies less bits, meaning that we have a loss in precision.  
 
@@ -181,7 +179,6 @@ Figure: GPU-CPU communication.
 <div align="center">
 Figure: Zoom in GPU architecture. An SM is a Streaming Multiprocessor: those are used to perform the computation and they have an internal memory (cache)<img width="2000" height="897" alt="Pasted image 20260428103758" src="https://github.com/user-attachments/assets/12225a54-df35-4887-b51b-545f34f83e95" />  
 </div>
-
 
 The idea is simple: there are some operation in your code that requires multiple read and write operations performed in the **HBM**. Those operations can be optimized if we use the cache memory of our GPU. `torch.compile` is used to reduce the read/writes in HBM and to rely more on the cache.
 
@@ -297,9 +294,10 @@ The configurations are defined in `GPT.configure_optimizers`. In this function t
 
 The first one is the **weight decay**. Recall that weight decay is a component added to the loss function:
 
-$$
+```math
 \mathcal L(\pmb w) + \frac \lambda 2\sum_{i}^{||\pmb w||}w_i^2
-$$
+```
+
 In the summation we don't want to consider biases and layernorm parameters, we just want to penalize the weights in the embedding matrix and in the `nn.Linear` layers. For this reason in the code we've divided the parameters in two groups
 
 ```python
